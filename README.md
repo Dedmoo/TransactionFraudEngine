@@ -8,7 +8,7 @@ Built with **.NET 10**. Deterministic rules make decisions explainable for compl
 
 ```mermaid
 flowchart TD
-    Switch["Payment / Card Switch"] -->|transaction| API["FraudEngine.Api<br/>POST /fraud/assess"]
+    Switch["Payment / Card Switch"] -->|transaction| API["FraudEngine.Api<br/>POST /api/fraud/assess"]
     API --> Service["FraudScoringService"]
     Service --> R1["Amount rules"]
     Service --> R2["Velocity rules"]

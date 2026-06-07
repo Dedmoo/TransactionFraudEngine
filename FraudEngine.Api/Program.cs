@@ -27,11 +27,18 @@ app.MapPost("/api/fraud/assess", (TransactionInput input, FraudScoringService se
 
 app.MapPost("/api/fraud/assess/batch", (List<TransactionInput> inputs, FraudScoringService service) =>
 {
-    if (inputs.Count == 0)
+    if (inputs is null || inputs.Count == 0)
         return Results.BadRequest(new { error = "Batch cannot be empty." });
 
-    var results = inputs.Select(service.Assess).ToList();
-    return Results.Ok(results);
+    try
+    {
+        var results = inputs.Select(service.Assess).ToList();
+        return Results.Ok(results);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
 });
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "transaction-fraud-engine" }));
