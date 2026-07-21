@@ -63,10 +63,12 @@ dotnet test
 dotnet run --project FraudEngine.Api
 ```
 
+API base URL (HTTP): `http://localhost:5204`
+
 ## Example request
 
 ```bash
-curl -s -X POST http://localhost:5080/api/fraud/assess \
+curl -s -X POST http://localhost:5204/api/fraud/assess \
   -H "Content-Type: application/json" \
   -d "{
     \"transactionId\": \"TX-1001\",
