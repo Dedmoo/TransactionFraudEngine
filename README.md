@@ -55,6 +55,52 @@ Decision thresholds:
 - `40–69` → Review
 - `70–100` → Block
 
+## Domain model
+
+Class-level view of the main types and how they relate (fields, operations and dependencies).
+
+```mermaid
+classDiagram
+    direction TB
+    class FraudScoringService {
+        -HighRiskMcc: HashSet~string~
+        +Assess(input) FraudAssessment
+    }
+    class TransactionInput {
+        +TransactionId: string
+        +CustomerId: string
+        +Amount: decimal
+        +Currency: string
+        +MerchantCategory: string
+        +CountryCode: string
+        +CustomerHomeCountry: string
+        +OccurredAt: DateTimeOffset
+        +TransactionsLastHour: int
+        +IsNewDevice: bool
+    }
+    class RuleHit {
+        +RuleCode: string
+        +Description: string
+        +Score: int
+    }
+    class FraudAssessment {
+        +TransactionId: string
+        +RiskScore: int
+        +Decision: RiskDecision
+        +Hits: List~RuleHit~
+    }
+    class RiskDecision {
+        <<enumeration>>
+        Allow
+        Review
+        Block
+    }
+    FraudScoringService ..> TransactionInput
+    FraudScoringService ..> FraudAssessment
+    FraudAssessment *-- RuleHit
+    FraudAssessment --> RiskDecision
+```
+
 ## Quick start
 
 ```bash
