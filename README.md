@@ -26,15 +26,17 @@ flowchart TD
     Decision -->|70-100| Block["Block"]
 ```
 
-Upstream systems supply velocity and device signals; this service stays stateless and returns an explainable decision with the exact rule hits.
+The service applies an in-process sliding one-hour velocity counter and returns an explainable decision with its exact rule hits. Velocity and audit data reset when the process restarts.
 
 ## Features
 
 - Risk score `0–100`
 - Decisions: `Allow`, `Review`, `Block`
 - Rule hits returned with codes and descriptions
-- Batch assessment endpoint
-- OpenAPI document included
+- Batch assessment endpoint, limited to 100 inputs
+- In-memory assessment audit endpoint
+- Input validation and security response headers
+- OpenAPI document mapped in every environment
 
 ## Scoring rules (v1)
 
@@ -55,9 +57,9 @@ Decision thresholds:
 - `40–69` → Review
 - `70–100` → Block
 
-## Domain model
+## Diagrams
 
-Class-level view of the main types and how they relate (fields, operations and dependencies).
+Architecture and UML diagrams are in [docs/architecture.md](docs/architecture.md) and [docs/uml.md](docs/uml.md). A standalone index is available at [docs/index.html](docs/index.html).
 
 ```mermaid
 classDiagram
@@ -149,13 +151,14 @@ Example response shape:
 |--------|------|-------------|
 | `POST` | `/api/fraud/assess` | Score one transaction |
 | `POST` | `/api/fraud/assess/batch` | Score many transactions |
+| `GET` | `/api/fraud/audit` | Read in-memory assessment audit |
 | `GET` | `/health` | Health check |
 
 ## Design notes
 
 - Rules are transparent and unit-tested; useful for model-risk discussions
 - Score is capped at 100
-- Engine is stateless; velocity is provided by the caller (upstream aggregator / stream job)
+- This is rule-based scoring, not an ML model; a production deployment would persist velocity and audit data
 
 ## Tests
 

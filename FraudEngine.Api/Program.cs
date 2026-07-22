@@ -6,10 +6,16 @@ builder.Services.AddSingleton<FraudScoringService>();
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+app.Use(async (context, next) =>
 {
-    app.MapOpenApi();
-}
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
+    await next();
+});
+
+app.MapOpenApi();
 
 app.MapGet("/", () => Results.Redirect("/openapi/v1.json"));
 
@@ -29,6 +35,8 @@ app.MapPost("/api/fraud/assess/batch", (List<TransactionInput> inputs, FraudScor
 {
     if (inputs is null || inputs.Count == 0)
         return Results.BadRequest(new { error = "Batch cannot be empty." });
+    if (inputs.Count > 100)
+        return Results.BadRequest(new { error = "Batch cannot contain more than 100 transactions." });
 
     try
     {
@@ -41,7 +49,9 @@ app.MapPost("/api/fraud/assess/batch", (List<TransactionInput> inputs, FraudScor
     }
 });
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "transaction-fraud-engine" }));
+app.MapGet("/api/fraud/audit", (FraudScoringService service) => Results.Ok(service.GetAudit()));
+
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "TransactionFraudEngine" }));
 
 app.Run();
 

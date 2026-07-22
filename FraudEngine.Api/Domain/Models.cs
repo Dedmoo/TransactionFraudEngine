@@ -16,7 +16,7 @@ public sealed record TransactionInput(
     string CountryCode,
     string CustomerHomeCountry,
     DateTimeOffset OccurredAt,
-    int TransactionsLastHour,
+    int? TransactionsLastHour,
     bool IsNewDevice);
 
 public sealed record RuleHit(string RuleCode, string Description, int Score);
@@ -26,3 +26,5 @@ public sealed record FraudAssessment(
     int RiskScore,
     RiskDecision Decision,
     IReadOnlyList<RuleHit> Hits);
+
+public sealed record AssessmentAuditEntry(DateTimeOffset AssessedAt, TransactionInput Input, FraudAssessment Assessment);

@@ -87,4 +87,28 @@ public class FraudScoringServiceTests
         Assert.Equal(RiskDecision.Block, result.Decision);
         Assert.Equal(100, result.RiskScore);
     }
+
+    [Fact]
+    public void Assess_ZeroAmount_IsRejected()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => _service.Assess(Base(amount: 0)));
+    }
+
+    [Fact]
+    public void Assess_AppendsAuditEntry()
+    {
+        _service.Assess(Base());
+        var audit = _service.GetAudit();
+        Assert.Single(audit);
+        Assert.Equal("TX-1", audit[0].Assessment.TransactionId);
+    }
+
+    [Fact]
+    public void Assess_TracksVelocityWhenClientDoesNotSupplyIt()
+    {
+        for (var index = 0; index < 8; index++)
+            _service.Assess(Base(velocity: 0) with { TransactionId = $"TX-{index}", TransactionsLastHour = null });
+        var result = _service.Assess(Base(velocity: 0) with { TransactionId = "TX-final", TransactionsLastHour = null });
+        Assert.Contains(result.Hits, hit => hit.RuleCode == "VEL_BURST");
+    }
 }
