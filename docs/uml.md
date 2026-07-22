@@ -1,21 +1,27 @@
 # UML
 ```mermaid
 classDiagram
-  class FraudScoringService { +Assess() +GetAudit() }
+  class FraudScoringService { +AssessAsync() +GetAuditAsync() +GetAuditByTransactionAsync() +GetAuditByCustomerAsync() }
+  class FraudDbContext { +VelocityEvents +AuditRecords +RuleHits }
   class TransactionInput
   class FraudAssessment
-  class AssessmentAuditEntry
+  class AuditRecordResponse
+  class FraudScoringOptions
   FraudScoringService --> TransactionInput
   FraudScoringService --> FraudAssessment
-  FraudScoringService o-- AssessmentAuditEntry
+  FraudScoringService --> AuditRecordResponse
+  FraudScoringService --> FraudDbContext
+  FraudScoringService --> FraudScoringOptions
 ```
 ```mermaid
 sequenceDiagram
   participant C as Client
   participant A as API
   participant S as FraudScoringService
+  participant DB as SQLite (EF Core)
   C->>A: POST assessment
-  A->>S: validate and score
-  S->>S: update velocity and audit
+  A->>S: validate and score using configured thresholds
+  S->>DB: query velocity window, insert velocity event
+  S->>DB: insert audit record + rule hits
   S-->>A: explainable decision
 ```

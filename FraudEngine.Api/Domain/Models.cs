@@ -27,4 +27,20 @@ public sealed record FraudAssessment(
     RiskDecision Decision,
     IReadOnlyList<RuleHit> Hits);
 
-public sealed record AssessmentAuditEntry(DateTimeOffset AssessedAt, TransactionInput Input, FraudAssessment Assessment);
+/// <summary>Read model for a persisted assessment, returned by the audit/history endpoints.</summary>
+public sealed record AuditRecordResponse(
+    long Id,
+    string TransactionId,
+    string CustomerId,
+    decimal Amount,
+    string Currency,
+    string MerchantCategory,
+    string CountryCode,
+    string CustomerHomeCountry,
+    DateTimeOffset OccurredAt,
+    int? TransactionsLastHour,
+    bool IsNewDevice,
+    int RiskScore,
+    RiskDecision Decision,
+    DateTimeOffset AssessedAt,
+    IReadOnlyList<RuleHit> Hits);

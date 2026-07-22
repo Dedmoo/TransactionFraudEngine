@@ -9,8 +9,12 @@ C4Context
 ```mermaid
 flowchart LR
   Request --> API --> Scoring
-  Scoring --> Velocity["In-process one-hour velocity"]
-  Scoring --> Audit["In-memory audit log"]
+  Scoring --> Velocity["Rolling velocity window<br/>(VelocityEvents table)"]
+  Scoring --> Audit["Assessment audit trail<br/>(AuditRecords + RuleHits tables)"]
   Scoring --> Decision
+  Velocity --> DB[("SQLite via EF Core")]
+  Audit --> DB
 ```
-The velocity and audit stores are in process and are reset on restart. This is a rule-based demonstrator, not an ML model or production event store.
+Velocity counters and the audit trail are persisted through EF Core to SQLite, so both survive a
+process restart. Rule thresholds are configuration-driven (`appsettings.json`), not hardcoded.
+This is a rule-based demonstrator, not an ML model.

@@ -1,82 +1,158 @@
+using FraudEngine.Api.Infrastructure;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+
 namespace FraudEngine.Api.Domain;
 
-public sealed class FraudScoringService
+/// <summary>
+/// Applies configurable rule-based fraud scoring and persists velocity counters and the
+/// assessment audit trail through <see cref="FraudDbContext"/>. Scoped per request: every
+/// assessment reads and writes durable state instead of an in-process cache.
+/// </summary>
+public sealed class FraudScoringService(FraudDbContext dbContext, IOptionsSnapshot<FraudScoringOptions> options)
 {
-    private static readonly TimeSpan VelocityWindow = TimeSpan.FromHours(1);
-    private readonly object _gate = new();
-    private readonly Dictionary<string, Queue<DateTimeOffset>> _velocityByCustomer = new(StringComparer.Ordinal);
-    private readonly List<AssessmentAuditEntry> _audit = [];
-    private static readonly HashSet<string> HighRiskMcc = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "7995", // gambling
-        "6051", // quasi cash
-        "4829"  // money transfer
-    };
+    private FraudScoringOptions Options => options.Value;
 
-    public FraudAssessment Assess(TransactionInput input)
+    public int MaxBatchSize => Options.MaxBatchSize;
+
+    public async Task<FraudAssessment> AssessAsync(TransactionInput input, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         Validate(input);
-        var serverVelocity = IncrementVelocity(input.CustomerId, input.OccurredAt);
+        var rules = Options;
+
+        var serverVelocity = await IncrementVelocityAsync(input.CustomerId, input.OccurredAt, rules, cancellationToken);
         var velocity = Math.Max(input.TransactionsLastHour ?? 0, serverVelocity);
 
         var hits = new List<RuleHit>();
 
-        if (input.Amount >= 25000m)
-            hits.Add(new RuleHit("AMT_HIGH", "High transaction amount", 40));
-        else if (input.Amount >= 10000m)
-            hits.Add(new RuleHit("AMT_ELEVATED", "Elevated transaction amount", 20));
+        if (input.Amount >= rules.AmountHighThreshold)
+            hits.Add(new RuleHit("AMT_HIGH", "High transaction amount", rules.AmountHighScore));
+        else if (input.Amount >= rules.AmountElevatedThreshold)
+            hits.Add(new RuleHit("AMT_ELEVATED", "Elevated transaction amount", rules.AmountElevatedScore));
 
-        if (velocity >= 8)
-            hits.Add(new RuleHit("VEL_BURST", "Velocity burst in the last hour", 35));
-        else if (velocity >= 4)
-            hits.Add(new RuleHit("VEL_ELEVATED", "Elevated transaction velocity", 15));
+        if (velocity >= rules.VelocityBurstThreshold)
+            hits.Add(new RuleHit("VEL_BURST", "Velocity burst in the last hour", rules.VelocityBurstScore));
+        else if (velocity >= rules.VelocityElevatedThreshold)
+            hits.Add(new RuleHit("VEL_ELEVATED", "Elevated transaction velocity", rules.VelocityElevatedScore));
 
         var hour = input.OccurredAt.UtcDateTime.Hour;
-        if (hour is >= 0 and < 5 && input.Amount >= 3000m)
-            hits.Add(new RuleHit("NIGHT_LARGE", "Large night-time transaction", 25));
+        if (hour >= rules.NightStartHourUtc && hour < rules.NightEndHourUtc && input.Amount >= rules.NightLargeAmountThreshold)
+            hits.Add(new RuleHit("NIGHT_LARGE", "Large night-time transaction", rules.NightLargeScore));
 
         if (!string.Equals(input.CountryCode, input.CustomerHomeCountry, StringComparison.OrdinalIgnoreCase))
-            hits.Add(new RuleHit("GEO_MISMATCH", "Country differs from customer home country", 30));
+            hits.Add(new RuleHit("GEO_MISMATCH", "Country differs from customer home country", rules.GeoMismatchScore));
 
-        if (HighRiskMcc.Contains(input.MerchantCategory))
-            hits.Add(new RuleHit("MCC_RISK", "High-risk merchant category", 25));
+        if (rules.HighRiskMerchantCategories.Contains(input.MerchantCategory))
+            hits.Add(new RuleHit("MCC_RISK", "High-risk merchant category", rules.MccRiskScore));
 
-        if (input.IsNewDevice && input.Amount >= 5000m)
-            hits.Add(new RuleHit("NEW_DEVICE_LARGE", "Large amount on a new device", 20));
+        if (input.IsNewDevice && input.Amount >= rules.NewDeviceAmountThreshold)
+            hits.Add(new RuleHit("NEW_DEVICE_LARGE", "Large amount on a new device", rules.NewDeviceLargeScore));
 
-        var score = Math.Min(100, hits.Sum(h => h.Score));
+        var score = Math.Min(rules.MaxScore, hits.Sum(h => h.Score));
         var decision = score switch
         {
-            >= 70 => RiskDecision.Block,
-            >= 40 => RiskDecision.Review,
+            var s when s >= rules.BlockThreshold => RiskDecision.Block,
+            var s when s >= rules.ReviewThreshold => RiskDecision.Review,
             _ => RiskDecision.Allow
         };
 
         var assessment = new FraudAssessment(input.TransactionId, score, decision, hits);
-        lock (_gate)
-            _audit.Add(new AssessmentAuditEntry(DateTimeOffset.UtcNow, input, assessment));
+
+        dbContext.AuditRecords.Add(new AssessmentAuditRecord
+        {
+            TransactionId = input.TransactionId,
+            CustomerId = input.CustomerId,
+            Amount = input.Amount,
+            Currency = input.Currency,
+            MerchantCategory = input.MerchantCategory,
+            CountryCode = input.CountryCode,
+            CustomerHomeCountry = input.CustomerHomeCountry,
+            OccurredAt = input.OccurredAt,
+            TransactionsLastHourInput = input.TransactionsLastHour,
+            IsNewDevice = input.IsNewDevice,
+            RiskScore = score,
+            Decision = decision,
+            AssessedAt = DateTimeOffset.UtcNow,
+            Hits = hits.Select(h => new RuleHitRecord
+            {
+                RuleCode = h.RuleCode,
+                Description = h.Description,
+                Score = h.Score
+            }).ToList()
+        });
+        await dbContext.SaveChangesAsync(cancellationToken);
+
         return assessment;
     }
 
-    public IReadOnlyList<AssessmentAuditEntry> GetAudit() {
-        lock (_gate)
-            return _audit.ToList();
+    public async Task<IReadOnlyList<AuditRecordResponse>> GetAuditAsync(int skip, int take, CancellationToken cancellationToken = default)
+    {
+        var records = await dbContext.AuditRecords
+            .Include(r => r.Hits)
+            .OrderByDescending(r => r.AssessedAt)
+            .Skip(Math.Max(0, skip))
+            .Take(Math.Clamp(take, 1, 500))
+            .ToListAsync(cancellationToken);
+
+        return records.Select(ToResponse).ToList();
     }
 
-    private int IncrementVelocity(string customerId, DateTimeOffset occurredAt)
+    public async Task<IReadOnlyList<AuditRecordResponse>> GetAuditByTransactionAsync(string transactionId, CancellationToken cancellationToken = default)
     {
-        lock (_gate)
-        {
-            if (!_velocityByCustomer.TryGetValue(customerId, out var events))
-                _velocityByCustomer[customerId] = events = new Queue<DateTimeOffset>();
-            var cutoff = occurredAt - VelocityWindow;
-            while (events.TryPeek(out var timestamp) && timestamp < cutoff)
-                events.Dequeue();
-            events.Enqueue(occurredAt);
-            return events.Count;
-        }
+        var records = await dbContext.AuditRecords
+            .Include(r => r.Hits)
+            .Where(r => r.TransactionId == transactionId)
+            .OrderByDescending(r => r.AssessedAt)
+            .ToListAsync(cancellationToken);
+
+        return records.Select(ToResponse).ToList();
     }
+
+    public async Task<IReadOnlyList<AuditRecordResponse>> GetAuditByCustomerAsync(string customerId, CancellationToken cancellationToken = default)
+    {
+        var records = await dbContext.AuditRecords
+            .Include(r => r.Hits)
+            .Where(r => r.CustomerId == customerId)
+            .OrderByDescending(r => r.AssessedAt)
+            .ToListAsync(cancellationToken);
+
+        return records.Select(ToResponse).ToList();
+    }
+
+    private async Task<int> IncrementVelocityAsync(string customerId, DateTimeOffset occurredAt, FraudScoringOptions rules, CancellationToken cancellationToken)
+    {
+        var cutoff = occurredAt - TimeSpan.FromHours(rules.VelocityWindowHours);
+
+        var priorCount = await dbContext.VelocityEvents.CountAsync(
+            e => e.CustomerId == customerId && e.OccurredAt >= cutoff && e.OccurredAt <= occurredAt,
+            cancellationToken);
+
+        dbContext.VelocityEvents.Add(new VelocityEventEntity
+        {
+            CustomerId = customerId,
+            OccurredAt = occurredAt
+        });
+
+        return priorCount + 1;
+    }
+
+    private static AuditRecordResponse ToResponse(AssessmentAuditRecord record) => new(
+        record.Id,
+        record.TransactionId,
+        record.CustomerId,
+        record.Amount,
+        record.Currency,
+        record.MerchantCategory,
+        record.CountryCode,
+        record.CustomerHomeCountry,
+        record.OccurredAt,
+        record.TransactionsLastHourInput,
+        record.IsNewDevice,
+        record.RiskScore,
+        record.Decision,
+        record.AssessedAt,
+        record.Hits.Select(h => new RuleHit(h.RuleCode, h.Description, h.Score)).ToList());
 
     private static void Validate(TransactionInput input)
     {
